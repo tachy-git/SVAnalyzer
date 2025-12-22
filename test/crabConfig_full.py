@@ -24,7 +24,7 @@ config.Data.publication = False  # Set to True if you want to publish output to 
 config.Data.outputDatasetTag = 'OUTPUTDATASETTAG'
 
 # Site settings
-config.Site.storageSite = 'T2_KR_KISTI'  # Your storage site
+config.Site.storageSite = 'T3_KR_KISTI'  # Your storage site
 # config.Site.whitelist = ['T2_KR_*', 'T2_US_*']  # Uncomment to specify allowed sites
 # config.Site.blacklist = ['T2_XX_XXX']  # Uncomment to exclude specific sites
 

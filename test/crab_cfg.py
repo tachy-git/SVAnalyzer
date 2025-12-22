@@ -26,7 +26,9 @@ process.analyzer = cms.EDAnalyzer('SVAnalyzer',
     jets = cms.InputTag("slimmedJets"),
     vertices = cms.InputTag("offlineSlimmedPrimaryVertices"),
     secondaryVertices = cms.InputTag("slimmedSecondaryVertices"),
-    muons = cms.InputTag("slimmedMuons")
+    muons = cms.InputTag("slimmedMuons"),
+    electrons = cms.InputTag("slimmedElectrons"),
+    genParticles = cms.InputTag("prunedGenParticles"),
 )
 
 process.p = cms.Path(process.analyzer)

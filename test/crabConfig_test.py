@@ -23,4 +23,4 @@ config.Data.publication = False
 config.Data.outputDatasetTag = 'SVAnalysis_test_v1'
 
 # Site settings
-config.Site.storageSite = 'T2_KR_KISTI'  # Change to your storage site
+config.Site.storageSite = 'T3_KR_KISTI'  # Change to your storage site

@@ -16,7 +16,7 @@ process.maxEvents = cms.untracked.PSet(
 # Input
 process.source = cms.Source("PoolSource",
     fileNames = cms.untracked.vstring(
-        'file:1b799c1b-8ed6-4d56-a950-f6756e8e6273.root'
+        'file:/T2_KR_KISTI/store/mc/RunIII2024Summer24MiniAODv6/QCD_Bin-PT-470to600_TuneCP5_13p6TeV_pythia8/MINIAODSIM/150X_mcRun3_2024_realistic_v2-v2/120000/0000c969-5555-4938-8bf9-02c56eb1694f.root'
     )
 )
 
@@ -31,7 +31,9 @@ process.analyzer = cms.EDAnalyzer("SVAnalyzer",
     jets = cms.InputTag("slimmedJets"),
     vertices = cms.InputTag("offlineSlimmedPrimaryVertices"),
     secondaryVertices = cms.InputTag("slimmedSecondaryVertices"),
-    muons = cms.InputTag("slimmedMuons")
+    muons = cms.InputTag("slimmedMuons"),
+    electrons = cms.InputTag("slimmedElectrons"),
+    genParticles = cms.InputTag("prunedGenParticles"),
 )
 
 print(">>> Adding analyzer to path")
