@@ -2,7 +2,7 @@
 
 # Simple condor submission script for histogram making
 
-BASE_DIR="/cms_scratch/taehee/SV"
+BASE_DIR="/xrootd/store/user/taehee"
 PILOT=0
 
 # QCD directories
@@ -48,22 +48,23 @@ mkdir -p "$SUBMIT_DIR"
 mkdir -p "$SUBMIT_DIR/logs"
 
 # Copy python script
-cp histogram_maker.py "$SUBMIT_DIR/"
+cp drawHisto.py "$SUBMIT_DIR/"
 
 # Create condor executable wrapper
 cat > "$SUBMIT_DIR/run_job.sh" << 'EOF'
 #!/bin/bash
 INPUT_FILE=$1
+XRD_FILE="${INPUT_FILE/\/xrootd/root://cms-xrdr.private.lo:2094//xrd}"
 QCD_DIR=$2
 OUTPUT_NUM=$3
 
-echo "Processing: $INPUT_FILE"
+echo "Processing: $XRD_FILE"
 echo "QCD Dir: $QCD_DIR"
 echo "Output number: $OUTPUT_NUM"
 
 source /cvmfs/sft.cern.ch/lcg/views/LCG_106/x86_64-el9-gcc13-dbg/setup.sh
 
-python3 histogram_maker.py "$INPUT_FILE" --dirname "$QCD_DIR" --output-number "$OUTPUT_NUM"
+python3 drawHisto.py "$XRD_FILE" --dirname "$QCD_DIR" --output-number "$OUTPUT_NUM"
 EOF
 
 chmod +x "$SUBMIT_DIR/run_job.sh"

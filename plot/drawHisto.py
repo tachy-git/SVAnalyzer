@@ -26,7 +26,6 @@ XSEC_MAP = {
     "QCD_Bin-PT-2500to3000": 0.004454,
     "QCD_Bin-PT-3000": 0.0005539,
 }
-#https://xsecdb-xsdb-official.app.cern.ch/xsdb/?columns=67108863&currentPage=0&pageSize=10&searchQuery=process_name%3DQCD_Bin-PT-30to50_TuneCP5_13p6TeV_pythia8
 
 LUMINOSITY = 112700.0  # pb^-1
 
@@ -49,18 +48,51 @@ def flat(x):
     """Flatten awkward array to numpy"""
     return ak.flatten(x, axis=None).to_numpy()
 
-def get_jet_flavor_mask(partFlav, flavor_type):
-    """Get mask for jet flavor"""
-    if flavor_type == 'inclusive':
-        return ak.ones_like(partFlav, dtype=bool)
-    elif flavor_type == 'b':
-        return abs(partFlav) == 5
-    elif flavor_type == 'c':
-        return abs(partFlav) == 4
-    elif flavor_type == 'light':
-        return (abs(partFlav) < 4) | (partFlav == 21)
-    else:
-        raise ValueError(f"Unknown flavor type: {flavor_type}")
+def calculate_deltaR(eta1, phi1, eta2, phi2):
+    """Calculate deltaR between two objects"""
+    deta = eta1 - eta2
+    dphi = np.arctan2(np.sin(phi1 - phi2), np.cos(phi1 - phi2))
+    return np.sqrt(deta**2 + dphi**2)
+
+def match_sv_to_jet(sv_eta, sv_phi, jet_eta, jet_phi, dr_threshold=0.4):
+    """
+    Match SVs to jets using deltaR < 0.4
+    Returns: (matched_mask, matched_jet_indices)
+    """
+    # Broadcast to calculate all deltaR values
+    # sv_eta: shape (n_events, n_sv)
+    # jet_eta: shape (n_events, n_jets)
+    
+    # Expand dimensions for broadcasting
+    sv_eta_exp = sv_eta[:, :, np.newaxis]  # (n_events, n_sv, 1)
+    sv_phi_exp = sv_phi[:, :, np.newaxis]
+    jet_eta_exp = jet_eta[:, np.newaxis, :]  # (n_events, 1, n_jets)
+    jet_phi_exp = jet_phi[:, np.newaxis, :]
+    
+    # Calculate deltaR for all SV-jet pairs
+    dr = calculate_deltaR(sv_eta_exp, sv_phi_exp, jet_eta_exp, jet_phi_exp)
+    
+    # Find minimum deltaR for each SV
+    min_dr = ak.min(dr, axis=2)
+    matched_mask = min_dr < dr_threshold
+    
+    # Find which jet each SV matched to
+    matched_jet_idx = ak.argmin(dr, axis=2)
+    
+    return matched_mask, matched_jet_idx
+
+def get_jet_flavor_for_sv(matched_mask, matched_jet_idx, jet_partonFlavour):
+    """
+    Get the parton flavour of the matched jet for each SV
+    Returns array with same shape as SVs, -999 for unmatched
+    """
+    # Initialize with -999 (unmatched)
+    sv_jet_flavour = ak.where(
+        matched_mask,
+        jet_partonFlavour[ak.local_index(matched_jet_idx, axis=1), matched_jet_idx],
+        -999
+    )
+    return sv_jet_flavour
 
 def process_file(input_file, output_file, dirname):
     """Process a single ROOT file and create histograms"""
@@ -69,190 +101,156 @@ def process_file(input_file, output_file, dirname):
     xsec = get_xsec(dirname)
     
     # Open input file
-    with uproot.open(input_file, timeout=300) as f:
+    with uproot.open(input_file, handler=uproot.source.xrootd.XRootDSource, timeout=300) as f:
         tree = f["analyzer/tree"]
         n_entries = tree.num_entries
         weight = calculate_weight(n_entries, xsec, LUMINOSITY)
         print(f"[INFO] Events: {n_entries}, XSec: {xsec} pb, Weight: {weight}")
         
-        # Read data - try reading branches separately to avoid format issues
+        # Read data
         try:
             data = tree.arrays(
-                ["lxy_SV", "dR_ptl", "invm_ptl", "mass_SV", "pt_trk", "pt_SV", 
-                 "eta_trk", "normChi2_SV", "normChi2_trk", "dxySig_trk", 
-                 "hits_trk", "mom_ptl", "ip2d_mu", "vtxProb_SV", 
-                 "dotProd_ptl", "dotProd_SV", "partFlav_jet"],
+                ["jet_pt", "jet_eta", "jet_phi", "jet_partonFlavour",
+                 "sv_mass", "sv_pt", "sv_eta", "sv_phi", "sv_lxy",
+                 "lep_pt", "lep_eta", "lep_phi", 
+                 "lep_isGlobalMuon"],
                 library="ak"
             )
-        except KeyError as e:
-            print(f"[WARNING] KeyError reading branches, trying alternative method: {e}")
-            # Read branches individually
-            data = {}
-            branch_names = ["lxy_SV", "dR_ptl", "invm_ptl", "mass_SV", "pt_trk", "pt_SV", 
-                           "eta_trk", "normChi2_SV", "normChi2_trk", "dxySig_trk", 
-                           "hits_trk", "mom_ptl", "ip2d_mu", "vtxProb_SV", 
-                           "dotProd_ptl", "dotProd_SV", "partFlav_jet"]
-            
-            for branch_name in branch_names:
-                try:
-                    data[branch_name] = tree[branch_name].array(library="ak")
-                except Exception as e:
-                    print(f"[ERROR] Failed to read branch {branch_name}: {e}")
-                    raise
-            
-            # Convert dict to ak.Record
-            data = ak.zip(data, depth_limit=1)
+        except Exception as e:
+            print(f"[ERROR] Failed to read branches: {e}")
+            raise
     
-    # Quality cuts
-    mask_pt = ak.all(data["pt_trk"] >= 5, axis=2)
-    mask_pt_evt = ak.all(mask_pt, axis=1)
-    mask_nonempty = ak.count(data["pt_SV"], axis=1) > 0
-    data = data[mask_nonempty & mask_pt_evt]
+    # Determine lepton type for each SV
+    # lep_isGlobalMuon is (n_events, n_sv, 2)
+    # If both tracks have isGlobalMuon >= 0, it's dimuon
+    # If both tracks have isGlobalMuon == -1, it's dielectron
+    is_muon_track = data["lep_isGlobalMuon"] >= 0
+    is_dimuon = ak.all(is_muon_track, axis=2)  # (n_events, n_sv)
+    is_dielectron = ak.all(~is_muon_track, axis=2)  # (n_events, n_sv)
+    
+    # Quality cuts - at least one SV per event
+    mask_nonempty = ak.num(data["sv_pt"], axis=1) > 0
+    data = data[mask_nonempty]
+    is_dimuon = is_dimuon[mask_nonempty]
+    is_dielectron = is_dielectron[mask_nonempty]
     
     n_events_pass = len(data)
     print(f"[INFO] Events passing cuts: {n_events_pass}/{n_entries}")
     
     if n_events_pass == 0:
         print("[WARNING] No events passed cuts")
+        return
     
-    # Check if mother IDs are same
-    same_in_sv = ak.all(data["mom_ptl"] == ak.firsts(data["mom_ptl"], axis=2), axis=2)
+    # Match SVs to jets
+    matched_to_jet, matched_jet_idx = match_sv_to_jet(
+        data["sv_eta"], data["sv_phi"],
+        data["jet_eta"], data["jet_phi"]
+    )
+    
+    # Get jet flavour for each SV
+    sv_jet_flavour = get_jet_flavor_for_sv(
+        matched_to_jet, matched_jet_idx, data["jet_partonFlavour"]
+    )
+    
+    # Create masks for jet flavours
+    in_b_jet = matched_to_jet & (abs(sv_jet_flavour) == 5)
+    in_c_jet = matched_to_jet & (abs(sv_jet_flavour) == 4)
+    in_light_jet = matched_to_jet & ((abs(sv_jet_flavour) < 4) | (sv_jet_flavour == 21))
+    outside_jet = ~matched_to_jet
     
     # Create output ROOT file
     out_file = ROOT.TFile(output_file, "RECREATE")
     
-    # Histogram configuration
-    hist_config = {
-        "vtxProb_SV": (100, 0, 1, "Vertex Probability", "vtxProb"),
-        "dR_ptl": (50, 0, 0.5, "#DeltaR(#mu_{1}, #mu_{2})", "dR_ptl"),
-        "invm_ptl": (100, 0, 10, "Invariant Mass [GeV]", "invm_ptl"),
-        "pt_trk": (80, 0, 200, "Track p_{T} [GeV]", "pt_trk"),
-        "eta_trk": (60, -3, 3, "Track #eta", "eta_trk"),
-        "lxy_SV": (50, 0, 10, "L_{xy} [cm]", "lxy_SV"),
-    }
+    # Lxy bins
+    lxy_bins = [(0, 0.2), (0.2, 1), (1, 2.4), (2.4, 3.1), (3.1, 7), (7, 10)]
     
-    flavor_types = ['inclusive', 'b', 'c', 'light']
-    mother_types = ['same', 'diff']
+    # Lepton types
+    lepton_types = ['muon', 'electron']
+    
+    # Jet categories
+    jet_categories = ['in_b', 'in_c', 'in_light', 'outside']
+    
     histograms = {}
     
     # Create histograms
-    for flavor in flavor_types:
-        for mother in mother_types:
-            for var, (nbins, xmin, xmax, title, short) in hist_config.items():
-                hname = f"h_{short}_{flavor}_{mother}"
-                histograms[hname] = ROOT.TH1F(hname, f"{title};{title};Events", 
-                                               nbins, xmin, xmax)
-                histograms[hname].Sumw2()
-    
-    # Histograms with vtxProb > 0.2 cut
-    for flavor in flavor_types:
-        for mother in mother_types:
-            for var, (nbins, xmin, xmax, title, short) in hist_config.items():
-                if var == "vtxProb_SV":
-                    continue
-                hname = f"h_{short}_{flavor}_{mother}_vtxcut"
-                histograms[hname] = ROOT.TH1F(hname, 
-                                               f"{title} (vtxProb>0.2);{title};Events",
-                                               nbins, xmin, xmax)
-                histograms[hname].Sumw2()
-    
-    # Invm vs lxy histograms
-    lxy_bins = [(0, 0.2), (0.2, 1), (1, 2.4), (2.4, 3.1), (3.1, 7), (7, 10)]
-    for flavor in flavor_types:
-        for mother in mother_types:
+    # Structure: h_invm_{lepton}_{jet_cat}_lxy{i}
+    for lep_type in lepton_types:
+        for jet_cat in jet_categories:
             for i, (lxy_min, lxy_max) in enumerate(lxy_bins):
-                hname = f"h_invm_lxy{i}_{flavor}_{mother}"
-                histograms[hname] = ROOT.TH1F(hname,
-                    f"Invariant Mass (L_{{xy}}=[{lxy_min},{lxy_max}] cm);M(#mu#mu) [GeV];Events",
-                    100, 0, 10)
+                hname = f"h_invm_{lep_type}_{jet_cat}_lxy{i}"
+                title = f"Invariant Mass ({lep_type}, {jet_cat}, L_{{xy}}=[{lxy_min},{lxy_max}] cm)"
+                histograms[hname] = ROOT.TH1F(
+                    hname,
+                    f"{title};M(ll) [GeV];Events",
+                    100, 0, 10
+                )
                 histograms[hname].Sumw2()
     
-    # Mother PDG ID histograms
-    for flavor in flavor_types:
-        hname = f"h_mom_pdgid_{flavor}_same"
-        histograms[hname] = ROOT.TH1F(hname, 
-                                       "Mother PDG ID;PDG ID;Events",
-                                       600, 0, 600)
-        histograms[hname].Sumw2()
-
-    # lxy histo for photon conversion
-    hname = "h_lxy_SV_light_same_photon"
-    histograms[hname] = ROOT.TH1F(hname,"L_{xy} (Light, Mother=Photon);L_{xy} [cm];Events",50, 0, 10)
-    histograms[hname].Sumw2()
+    # Also create inclusive histograms (all lxy)
+    for lep_type in lepton_types:
+        for jet_cat in jet_categories:
+            hname = f"h_invm_{lep_type}_{jet_cat}_inclusive"
+            title = f"Invariant Mass ({lep_type}, {jet_cat})"
+            histograms[hname] = ROOT.TH1F(
+                hname,
+                f"{title};M(ll) [GeV];Events",
+                100, 0, 10
+            )
+            histograms[hname].Sumw2()
     
     # Fill histograms
-    for flavor in flavor_types:
-        flavor_mask_per_jet = get_jet_flavor_mask(data["partFlav_jet"], flavor)
-        flavor_mask = ak.any(flavor_mask_per_jet, axis=1)
+    for lep_type in lepton_types:
+        # Select lepton type
+        if lep_type == 'muon':
+            lep_mask = is_dimuon
+        else:  # electron
+            lep_mask = is_dielectron
         
-        for mother in mother_types:
-            if mother == 'same':
-                mother_mask = ak.all(same_in_sv, axis=1)
-            else:
-                mother_mask = ~ak.all(same_in_sv, axis=1)
+        for jet_cat in jet_categories:
+            # Select jet category
+            if jet_cat == 'in_b':
+                jet_mask = in_b_jet
+            elif jet_cat == 'in_c':
+                jet_mask = in_c_jet
+            elif jet_cat == 'in_light':
+                jet_mask = in_light_jet
+            else:  # outside
+                jet_mask = outside_jet
             
-            mask = flavor_mask & mother_mask
-            if ak.sum(mask) == 0:
+            # Combined mask
+            combined_mask = lep_mask & jet_mask
+            
+            if ak.sum(combined_mask) == 0:
                 continue
             
-            subset = data[mask]
+            # Get invariant masses for this category
+            invm_values = data["sv_mass"][combined_mask]
+            lxy_values = data["sv_lxy"][combined_mask]
             
-            # Fill basic histograms
-            for var, (_, _, _, _, short) in hist_config.items():
-                hname = f"h_{short}_{flavor}_{mother}"
-                values = flat(subset[var])
-                for val in values:
-                    histograms[hname].Fill(val, weight)
+            # Fill inclusive histogram
+            hname = f"h_invm_{lep_type}_{jet_cat}_inclusive"
+            for val in flat(invm_values):
+                #histograms[hname].Fill(val, weight)
+                histograms[hname].Fill(val)
             
-            # Fill with vtxProb cut
-            vtx_cut_mask = ak.all(subset["vtxProb_SV"] > 0.2, axis=1)
-            subset_vtxcut = subset[vtx_cut_mask]
-            
-            for var, (_, _, _, _, short) in hist_config.items():
-                if var == "vtxProb_SV":
-                    continue
-                hname = f"h_{short}_{flavor}_{mother}_vtxcut"
-                values = flat(subset_vtxcut[var])
-                for val in values:
-                    histograms[hname].Fill(val, weight)
-            
-            # Fill invm vs lxy
+            # Fill lxy-binned histograms
             for i, (lxy_min, lxy_max) in enumerate(lxy_bins):
-                lxy_mask = (subset["lxy_SV"] >= lxy_min) & (subset["lxy_SV"] < lxy_max)
-                lxy_mask_evt = ak.any(lxy_mask, axis=1)
-                subset_lxy = subset[lxy_mask_evt]
+                lxy_bin_mask = (lxy_values >= lxy_min) & (lxy_values < lxy_max)
+                invm_in_bin = invm_values[lxy_bin_mask]
                 
-                invm_vals = flat(subset_lxy["invm_ptl"])
-                hname = f"h_invm_lxy{i}_{flavor}_{mother}"
-                for val in invm_vals:
-                    histograms[hname].Fill(val, weight)
-            
-            # Fill mother PDG ID
-            if mother == 'same':
-                mom_vals = flat(subset["mom_ptl"])
-                hname = f"h_mom_pdgid_{flavor}_same"
-                for val in mom_vals:
-                    histograms[hname].Fill(abs(val), weight)
-
-            if flavor == 'light' and mother == 'same':
-                photon_mask = ak.all(abs(subset["mom_ptl"]) == 22, axis=2)
-                photon_mask_evt = ak.all(photon_mask, axis=1)
-                subset_photon = subset[photon_mask_evt]
-
-                lxy_vals = flat(subset_photon["lxy_SV"])
-                hname = "h_lxy_SV_light_same_photon"
-                for val in lxy_vals:
-                    histograms[hname].Fill(val, weight)
-
-            if flavor == 'light' and mother == 'same':
-                    photon_mask = ak.all(abs(subset["mom_ptl"]) == 22, axis=2)
-                    photon_mask_evt = ak.all(photon_mask, axis=1)
-                    subset_photon = subset[photon_mask_evt]
-
-                    lxy_vals = flat(subset_photon["lxy_SV"])
-                    hname = "h_lxy_SV_light_same_photon"
-                    for val in lxy_vals:
-                            histograms[hname].Fill(val, weight)
+                hname = f"h_invm_{lep_type}_{jet_cat}_lxy{i}"
+                for val in flat(invm_in_bin):
+                    #histograms[hname].Fill(val, weight)
+                    histograms[hname].Fill(val)
+    
+    # Print some statistics
+    print(f"[INFO] Total SVs: {ak.sum(ak.num(data['sv_mass'], axis=1))}")
+    print(f"[INFO] Dimuon SVs: {ak.sum(ak.sum(is_dimuon, axis=1))}")
+    print(f"[INFO] Dielectron SVs: {ak.sum(ak.sum(is_dielectron, axis=1))}")
+    print(f"[INFO] SVs in b-jets: {ak.sum(ak.sum(in_b_jet, axis=1))}")
+    print(f"[INFO] SVs in c-jets: {ak.sum(ak.sum(in_c_jet, axis=1))}")
+    print(f"[INFO] SVs in light-jets: {ak.sum(ak.sum(in_light_jet, axis=1))}")
+    print(f"[INFO] SVs outside jets: {ak.sum(ak.sum(outside_jet, axis=1))}")
     
     # Write histograms
     for hist in histograms.values():
