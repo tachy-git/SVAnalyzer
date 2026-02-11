@@ -73,6 +73,7 @@ private:
   // Standalone-pair info (within each collection separately)
   std::vector<float> sa_mll_;
   std::vector<float> sa_mll2_;
+  std::vector<float> sa_mll3_;
   std::vector<float> sa_mu1_pt_;
   std::vector<float> sa_mu2_pt_;
   std::vector<float> sa_mu1_ip_;
@@ -131,7 +132,8 @@ void staMuon::beginJob() {
 
   tree_->Branch("sa_coll",   &sa_coll_);
   tree_->Branch("sa_mll",    &sa_mll_);
-  tree_->Branch("sa_mll2_",    &sa_mll2_);
+  tree_->Branch("sa_mll2",    &sa_mll2_);
+  tree_->Branch("sa_mll3",    &sa_mll3_);
   tree_->Branch("sa_mu1_pt", &sa_mu1_pt_);
   tree_->Branch("sa_mu2_pt", &sa_mu2_pt_);
   tree_->Branch("sa_mu1_ip", &sa_mu1_ip_);
@@ -162,6 +164,7 @@ void staMuon::clearVectors() {
   sa_coll_.clear();
   sa_mll_.clear();
   sa_mll2_.clear();
+  sa_mll3_.clear();
   sa_mu1_pt_.clear();
   sa_mu2_pt_.clear();
   sa_mu1_ip_.clear();
@@ -278,7 +281,7 @@ void staMuon::analyze(const edm::Event& iEvent, const edm::EventSetup& iSetup) {
         sa_mll2_.push_back(mll);
 
         // Kalman Vertex Fitter
-        KalmanVertexFitter kvf(false);
+        KalmanVertexFitter kvf(true,true);
         std::vector<reco::TransientTrack> tTracks;
 
         tTracks.emplace_back(ttBuilder.build( sa[i]->bestTrack() ));
@@ -294,6 +297,23 @@ void staMuon::analyze(const edm::Event& iEvent, const edm::EventSetup& iSetup) {
 
         sa_Lxy_.push_back(Lxy);
         sa_prob_.push_back(prob);
+
+        // Refitting
+        const auto& refittedTracks = tv.refittedTracks();
+        if (refittedTracks.size() < 2) return;
+        /*
+        for (auto const& rt : refittedTracks) {
+          GlobalVector p = rt.impactPointState().globalMomentum();
+        }
+        */
+        const double mMu = 0.105658;
+        auto m1 = refittedTracks[0].impactPointState().globalMomentum();
+        auto m2 = refittedTracks[1].impactPointState().globalMomentum();
+        TLorentzVector mu1, mu2;
+        mu1.SetXYZM(m1.x(), m1.y(), m1.z(), mMu);
+        mu2.SetXYZM(m2.x(), m2.y(), m2.z(), mMu);
+        double mass = (mu1 + mu2).M();
+        sa_mll3_.push_back(mass);
 
       }
     }

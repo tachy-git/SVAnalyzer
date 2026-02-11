@@ -5,15 +5,17 @@ Therefore, SVAnalyzer makes Ntuples from MiniAOD samples, which can be used for 
 ## Initial setup
 ```
 source /cvmfs/cms.cern.ch/cmsset_default.sh
-cmsrel CMSSW_15_0_4 # CMSSW used for the 2024 MiniAOD sample (Dec 2025)
-cd CMSSW_15_0_4/src
+cmsrel CMSSW_X_Y_Z
+# 15_0_4: CMSSW used for the 2024 MiniAOD sample (Dec 2025)
+# 15_1_0: has function KalmanVertexFitter::KalmanVertexFitter(bool useSmoothing, bool useMuonSystemBounds) {
+cd CMSSW_X_Y_Z/src
 cmsenv
 mkdir MyAnalyzer && cd MyAnalyzer
 git clone <this_repository>
 ```
 ## Build the analyzer
 ```
-cd CMSSW_15_0_4/src
+cd CMSSW_X_Y_Z/src
 vi MyAnaylzer/SVAnalyzer/plugins/SVAnalyzer.cc #Edit the analyzer here
 scram b -j 4
 
