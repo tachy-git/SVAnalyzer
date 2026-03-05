@@ -33,9 +33,10 @@
 #include <cmath>
 #include <array>
 #include <limits>
+#include <string>
 
 static constexpr float kInvalid = -999.f;
-static constexpr int   kNFits   = 3;
+static constexpr int   kNFits   = 1;
 
 class staMuon : public edm::one::EDAnalyzer<edm::one::SharedResources> {
 public:
@@ -56,47 +57,35 @@ private:
 
   TTree* tree_;
 
-  // ===========================================================================
-  // Branch variables
-  //
-  // event-level gen       vector<T>           one entry per gen particle/pair
-  // pair-level            vector<T>           one entry per OS dimuon pair
-  // muon-level            vector<vector<T>>   inner [0]=mu0 [1]=mu1
-  // per-fit pair-level    vector<T>  x kNFits one branch per fit
-  // per-fit muon-level    vector<vector<T>> x kNFits
-  //
-  // Gen matching (both original and per-fit refit) are FLAT:
-  //   separate vector<T> for mu0 and mu1, one entry per pair
-  //   naming: match_dR_mu0,  match_dR_mu1
-  //           match_dR_refit_{f}_mu0,  match_dR_refit_{f}_mu1
-  // ===========================================================================
-
   // == event-level: gen J/psi (pdgId == 443) =================================
   std::vector<float> gen_jpsi_pt_;
   std::vector<float> gen_jpsi_eta_;
   std::vector<float> gen_jpsi_phi_;
 
-  // == event-level: gen dimuon system (mu+ + mu- from |pdgId|==13) ===========
-  // pT of the vectorial sum of the two highest-pT gen muons of opposite charge
+  // == event-level: gen dimuon system (leading OS mu+mu-) ====================
   std::vector<float> gen_dimu_pt_;
   std::vector<float> gen_dimu_eta_;
   std::vector<float> gen_dimu_phi_;
   std::vector<float> gen_dimu_mass_;
-  // dR between the two gen muons
   std::vector<float> gen_dimu_dR_;
 
-  // == event-level: gen muons (|pdgId| == 13) ================================
+  // == event-level: gen muons (all, as before) ===============================
   std::vector<float> gen_mu_pt_;
   std::vector<float> gen_mu_eta_;
   std::vector<float> gen_mu_phi_;
   std::vector<int>   gen_mu_pid_;   // +13 or -13
+
+  // == NEW: event-level gen muon pT split by charge (NO matching) ============
+  // gen mu- has pdgId=+13, gen mu+ has pdgId=-13
+  std::vector<float> gen_mu_pt_m_;  // gen mu- (charge -1)
+  std::vector<float> gen_mu_pt_p_;  // gen mu+ (charge +1)
 
   // == pair-level scalars ====================================================
   std::vector<int>   coll_;
   std::vector<float> invm_;
   std::vector<float> invm_bef_;
 
-  // == muon-level: original PAT muon =========================================
+  // == muon-level: original PAT muon ========================================
   std::vector<std::vector<float>> pt_mu_;
   std::vector<std::vector<float>> eta_mu_;
   std::vector<std::vector<int>>   charge_mu_;
@@ -107,11 +96,9 @@ private:
   std::vector<std::vector<int>>   dir_mu_;
   std::vector<std::vector<float>> normChi_mu_;
 
-  // == gen matching on original PAT muon (flat, one entry per pair) ===========
-  std::vector<float> match_dR_mu0_;
-  std::vector<float> match_dR_mu1_;
-  std::vector<float> match_ptRatio_mu0_;
-  std::vector<float> match_ptRatio_mu1_;
+  // == NEW: reco muon pT split by charge (NO matching) =======================
+  std::vector<float> reco_mu_pt_m_; // reco mu- (charge -1)
+  std::vector<float> reco_mu_pt_p_; // reco mu+ (charge +1)
 
   // == per-fit: pair-level ===================================================
   std::array<std::vector<int>,   kNFits> isValid_vtx_;
@@ -125,12 +112,6 @@ private:
   std::array<std::vector<std::vector<float>>, kNFits> pt_refit_;
   std::array<std::vector<std::vector<float>>, kNFits> eta_refit_;
   std::array<std::vector<std::vector<float>>, kNFits> relPtUnc_refit_;
-
-  // == gen matching on refitted track (flat, one entry per pair per fit) ======
-  std::array<std::vector<float>, kNFits> match_dR_refit_mu0_;
-  std::array<std::vector<float>, kNFits> match_dR_refit_mu1_;
-  std::array<std::vector<float>, kNFits> match_ptRatio_refit_mu0_;
-  std::array<std::vector<float>, kNFits> match_ptRatio_refit_mu1_;
 
   // == helpers ===============================================================
   static bool passSASelection(const pat::Muon& mu) {
@@ -188,29 +169,6 @@ private:
     static RefitVars invalid() { return {kInvalid, kInvalid, kInvalid, kInvalid}; }
   };
 
-  // Match a track to charge-matched gen muons; returns {dR, recoPt/genPt}
-  std::pair<float,float> matchToGen(
-      float recoEta, float recoPhi, float recoPt, int recoCharge,
-      const std::vector<reco::GenParticle>& gens) const
-  {
-    float bestDR = std::numeric_limits<float>::max();
-    const reco::GenParticle* bestGen = nullptr;
-
-    for (const auto& gp : gens) {
-      if (std::abs(gp.pdgId()) != 13) continue;
-      // mu-: pdgId=+13 charge=-1  |  mu+: pdgId=-13 charge=+1
-      int genCharge = (gp.pdgId() == 13) ? -1 : +1;
-      if (genCharge != recoCharge) continue;
-
-      float dr = myDeltaR(recoEta, recoPhi, gp.eta(), gp.phi());
-      if (dr < bestDR) { bestDR = dr; bestGen = &gp; }
-    }
-
-    if (!bestGen) return {kInvalid, kInvalid};
-    float ptRatio = (bestGen->pt() > 0.f) ? recoPt / bestGen->pt() : kInvalid;
-    return {bestDR, ptRatio};
-  }
-
   void pushMuonPair(const MuonVars& v1, const MuonVars& v2);
 };
 
@@ -246,9 +204,13 @@ void staMuon::beginJob() {
   tree_->Branch("gen_mu_phi",     &gen_mu_phi_);
   tree_->Branch("gen_mu_pid",     &gen_mu_pid_);
 
+  // NEW: gen muon pT split by charge
+  tree_->Branch("gen_mu_pt_m", &gen_mu_pt_m_);
+  tree_->Branch("gen_mu_pt_p", &gen_mu_pt_p_);
+
   // pair-level scalars
   tree_->Branch("coll",     &coll_);
-  tree_->Branch("invm", &invm_);
+  tree_->Branch("invm",     &invm_);
   tree_->Branch("invm_bef", &invm_bef_);
 
   // muon-level original
@@ -262,29 +224,22 @@ void staMuon::beginJob() {
   tree_->Branch("dir_mu",     &dir_mu_);
   tree_->Branch("normChi_mu", &normChi_mu_);
 
-  // gen matching on original PAT muon (flat)
-  tree_->Branch("match_dR_mu0",      &match_dR_mu0_);
-  tree_->Branch("match_dR_mu1",      &match_dR_mu1_);
-  tree_->Branch("match_ptRatio_mu0", &match_ptRatio_mu0_);
-  tree_->Branch("match_ptRatio_mu1", &match_ptRatio_mu1_);
+  // NEW: reco muon pT split by charge (no matching)
+  tree_->Branch("reco_mu_pt_m", &reco_mu_pt_m_);
+  tree_->Branch("reco_mu_pt_p", &reco_mu_pt_p_);
 
   // per-fit branches
   for (int f = 0; f < kNFits; ++f) {
     const std::string s = std::to_string(f);
-    tree_->Branch(("isValid_vtx_"              + s).c_str(), &isValid_vtx_[f]);
-    tree_->Branch(("invm_aft_"                 + s).c_str(), &invm_aft_[f]);
-    tree_->Branch(("Lxy_"                      + s).c_str(), &Lxy_[f]);
-    tree_->Branch(("LxyErr_"                   + s).c_str(), &LxyErr_[f]);
-    tree_->Branch(("normChi_vtx_"              + s).c_str(), &normChi_vtx_[f]);
-    tree_->Branch(("prob_vtx_"                 + s).c_str(), &prob_vtx_[f]);
-    tree_->Branch(("pt_refit_"                 + s).c_str(), &pt_refit_[f]);
-    tree_->Branch(("eta_refit_"                + s).c_str(), &eta_refit_[f]);
-    tree_->Branch(("relPtUnc_refit_"           + s).c_str(), &relPtUnc_refit_[f]);
-    // gen matching on refit track (flat)
-    tree_->Branch(("match_dR_refit_mu0_"       + s).c_str(), &match_dR_refit_mu0_[f]);
-    tree_->Branch(("match_dR_refit_mu1_"       + s).c_str(), &match_dR_refit_mu1_[f]);
-    tree_->Branch(("match_ptRatio_refit_mu0_"  + s).c_str(), &match_ptRatio_refit_mu0_[f]);
-    tree_->Branch(("match_ptRatio_refit_mu1_"  + s).c_str(), &match_ptRatio_refit_mu1_[f]);
+    tree_->Branch(("isValid_vtx_"    + s).c_str(), &isValid_vtx_[f]);
+    tree_->Branch(("invm_aft_"       + s).c_str(), &invm_aft_[f]);
+    tree_->Branch(("Lxy_"            + s).c_str(), &Lxy_[f]);
+    tree_->Branch(("LxyErr_"         + s).c_str(), &LxyErr_[f]);
+    tree_->Branch(("normChi_vtx_"    + s).c_str(), &normChi_vtx_[f]);
+    tree_->Branch(("prob_vtx_"       + s).c_str(), &prob_vtx_[f]);
+    tree_->Branch(("pt_refit_"       + s).c_str(), &pt_refit_[f]);
+    tree_->Branch(("eta_refit_"      + s).c_str(), &eta_refit_[f]);
+    tree_->Branch(("relPtUnc_refit_" + s).c_str(), &relPtUnc_refit_[f]);
   }
 }
 
@@ -297,6 +252,9 @@ void staMuon::clearVectors() {
   gen_mu_pt_.clear();    gen_mu_eta_.clear();
   gen_mu_phi_.clear();   gen_mu_pid_.clear();
 
+  gen_mu_pt_m_.clear();
+  gen_mu_pt_p_.clear();
+
   coll_.clear();
   invm_.clear();
   invm_bef_.clear();
@@ -306,8 +264,8 @@ void staMuon::clearVectors() {
   cscHit_mu_.clear(); dtHit_mu_.clear();
   dir_mu_.clear();    normChi_mu_.clear();
 
-  match_dR_mu0_.clear();      match_dR_mu1_.clear();
-  match_ptRatio_mu0_.clear(); match_ptRatio_mu1_.clear();
+  reco_mu_pt_m_.clear();
+  reco_mu_pt_p_.clear();
 
   for (int f = 0; f < kNFits; ++f) {
     isValid_vtx_[f].clear();
@@ -316,8 +274,6 @@ void staMuon::clearVectors() {
     normChi_vtx_[f].clear();      prob_vtx_[f].clear();
     pt_refit_[f].clear();         eta_refit_[f].clear();
     relPtUnc_refit_[f].clear();
-    match_dR_refit_mu0_[f].clear();      match_dR_refit_mu1_[f].clear();
-    match_ptRatio_refit_mu0_[f].clear(); match_ptRatio_refit_mu1_[f].clear();
   }
 }
 
@@ -373,13 +329,15 @@ void staMuon::analyze(const edm::Event& iEvent, const edm::EventSetup& iSetup) {
         gen_mu_phi_.push_back(gp.phi());
         gen_mu_pid_.push_back(pid);
 
+        // NEW: split gen muon pT by charge without matching
+        if (pid == 13)  gen_mu_pt_m_.push_back(gp.pt()); // mu- (charge -1)
+        if (pid == -13) gen_mu_pt_p_.push_back(gp.pt()); // mu+ (charge +1)
+
         // collect the highest-pT mu+/mu- for the gen dimuon system
-        if (pid == -13) {                                   // mu+
-          if (!genMuPlus  || gp.pt() > genMuPlus->pt())
-            genMuPlus  = &gp;
-        } else {                                            // mu- (pid=+13)
-          if (!genMuMinus || gp.pt() > genMuMinus->pt())
-            genMuMinus = &gp;
+        if (pid == -13) { // mu+
+          if (!genMuPlus  || gp.pt() > genMuPlus->pt()) genMuPlus  = &gp;
+        } else {          // mu- (pid=+13)
+          if (!genMuMinus || gp.pt() > genMuMinus->pt()) genMuMinus = &gp;
         }
       }
     }
@@ -387,10 +345,8 @@ void staMuon::analyze(const edm::Event& iEvent, const edm::EventSetup& iSetup) {
     // gen dimuon system from the leading OS pair
     if (genMuPlus && genMuMinus) {
       TLorentzVector gp1, gp2;
-      gp1.SetPtEtaPhiM(genMuPlus->pt(),  genMuPlus->eta(),
-                       genMuPlus->phi(),  0.105658f);
-      gp2.SetPtEtaPhiM(genMuMinus->pt(), genMuMinus->eta(),
-                       genMuMinus->phi(), 0.105658f);
+      gp1.SetPtEtaPhiM(genMuPlus->pt(),  genMuPlus->eta(),  genMuPlus->phi(),  0.105658f);
+      gp2.SetPtEtaPhiM(genMuMinus->pt(), genMuMinus->eta(), genMuMinus->phi(), 0.105658f);
       TLorentzVector gDimu = gp1 + gp2;
       gen_dimu_pt_.push_back(gDimu.Pt());
       gen_dimu_eta_.push_back(gDimu.Eta());
@@ -401,61 +357,72 @@ void staMuon::analyze(const edm::Event& iEvent, const edm::EventSetup& iSetup) {
     }
   }
 
-  if (vertices->empty()) { tree_->Fill(); return; }
+  if (!vertices.isValid() || vertices->empty()) { tree_->Fill(); return; }
   const reco::Vertex& pv = vertices->at(0);
-  const GlobalPoint pvPos(pv.x(), pv.y(), pv.z());
   const reco::Vertex::Error& ve = pv.error();
   const GlobalError pvErr(ve.At(0,0), ve.At(1,0), ve.At(1,1),
-                           ve.At(2,0), ve.At(2,1), ve.At(2,2));
-
-  const std::vector<reco::GenParticle> emptyGen;
-  const std::vector<reco::GenParticle>& gens =
-      genParticles.isValid() ? *genParticles : emptyGen;
+                          ve.At(2,0), ve.At(2,1), ve.At(2,2));
 
   // == process one muon collection ===========================================
   auto processMuonCollection = [&](const std::vector<pat::Muon>& coll, int collId) {
 
-    std::vector<const pat::Muon*> muons;
-    muons.reserve(coll.size());
+    // NEW: save reco muon pT by charge (no matching, no pairing)
+    /*
     for (const auto& mu : coll) {
-      muons.push_back(&mu);
+      const int q = mu.charge();
+      if (q == -1) reco_mu_pt_m_.push_back(mu.pt());
+      else if (q == +1) reco_mu_pt_p_.push_back(mu.pt());
     }
+    */
+    for (const auto& mu : coll) {
+  const reco::TrackRef ot = mu.outerTrack();
+  if (ot.isNull()) continue;
 
-    coll_.push_back(muons.size());
+  const float pt = ot->pt();
+  const int q = mu.charge();
+
+  if (q == -1)      reco_mu_pt_m_.push_back(pt);
+  else if (q == +1) reco_mu_pt_p_.push_back(pt);
+}
+
+    std::vector<const pat::Muon*> muonsPtr;
+    muonsPtr.reserve(coll.size());
+    for (const auto& mu : coll) muonsPtr.push_back(&mu);
+
+    coll_.push_back(static_cast<int>(muonsPtr.size()));
 
     constexpr float mMu = 0.105658f;
 
-    for (size_t i = 0; i < muons.size(); ++i) {
-      for (size_t j = i + 1; j < muons.size(); ++j) {
-        const pat::Muon* mu1 = muons[i];
-        const pat::Muon* mu2 = muons[j];
+    // OuterTrack-based invariant mass for all OS combinations with outerTrack pt > 10
+    for (size_t i = 0; i < muonsPtr.size(); ++i) {
+      for (size_t j = i + 1; j < muonsPtr.size(); ++j) {
+        const pat::Muon* mu1 = muonsPtr[i];
+        const pat::Muon* mu2 = muonsPtr[j];
 
-        // Opposite sign
         if (mu1->charge() * mu2->charge() >= 0) continue;
 
-        // Require outerTrack
         const reco::TrackRef ot1 = mu1->outerTrack();
         const reco::TrackRef ot2 = mu2->outerTrack();
         if (ot1.isNull() || ot2.isNull()) continue;
 
-        // pT cut on outerTrack
         if (ot1->pt() <= 10.0f || ot2->pt() <= 10.0f) continue;
 
-        // Build 4-vectors from outerTrack kinematics
         TLorentzVector p1, p2;
         p1.SetPtEtaPhiM(ot1->pt(), ot1->eta(), ot1->phi(), mMu);
         p2.SetPtEtaPhiM(ot2->pt(), ot2->eta(), ot2->phi(), mMu);
 
-        const float mass = (p1 + p2).M();
-        invm_.push_back(mass);
+        invm_.push_back((p1 + p2).M());
       }
     }
 
+    // Pair loop (kept as in your code)
     std::vector<const pat::Muon*> sa;
     sa.reserve(coll.size());
-    for (const auto& mu : coll)
-      //if (passSASelection(mu)) sa.push_back(&mu);
+    for (const auto& mu : coll) {
+      // If you want SA-only again, re-enable:
+      // if (passSASelection(mu)) sa.push_back(&mu);
       sa.push_back(&mu);
+    }
 
     for (size_t i = 0; i < sa.size(); ++i) {
       for (size_t j = i + 1; j < sa.size(); ++j) {
@@ -470,28 +437,17 @@ void staMuon::analyze(const edm::Event& iEvent, const edm::EventSetup& iSetup) {
         const auto mv1 = MuonVars::from(*mu1);
         const auto mv2 = MuonVars::from(*mu2);
 
-        // == gen matching on original PAT muon =============================
-        auto [dR1,  ptr1]  = matchToGen(mv1.eta, mv1.phi, mv1.pt, mv1.charge, gens);
-        auto [dR2,  ptr2]  = matchToGen(mv2.eta, mv2.phi, mv2.pt, mv2.charge, gens);
-
-        //coll_.push_back(collId);
         invm_bef_.push_back((p1 + p2).M());
         pushMuonPair(mv1, mv2);
 
-        // flat gen matching (original)
-        match_dR_mu0_.push_back(dR1);    match_dR_mu1_.push_back(dR2);
-        match_ptRatio_mu0_.push_back(ptr1); match_ptRatio_mu1_.push_back(ptr2);
-
         // == sequential Kalman vertex fitting ==============================
         KalmanVertexFitter kvf(true, true);
-        constexpr float mMu = 0.105658f;
 
         std::vector<reco::TransientTrack> currentTracks;
         currentTracks.emplace_back(ttBuilder.build(mu1->bestTrack()));
         currentTracks.emplace_back(ttBuilder.build(mu2->bestTrack()));
 
         for (int ifit = 0; ifit < kNFits; ++ifit) {
-
           TransientVertex tv = kvf.vertex(currentTracks);
           const bool fitOk   = tv.isValid() && tv.refittedTracks().size() == 2;
 
@@ -506,11 +462,6 @@ void staMuon::analyze(const edm::Event& iEvent, const edm::EventSetup& iSetup) {
               pt_refit_[jfit].push_back      ({kInvalid, kInvalid});
               eta_refit_[jfit].push_back     ({kInvalid, kInvalid});
               relPtUnc_refit_[jfit].push_back({kInvalid, kInvalid});
-              // flat gen matching (refit) -- invalid
-              match_dR_refit_mu0_[jfit].push_back(kInvalid);
-              match_dR_refit_mu1_[jfit].push_back(kInvalid);
-              match_ptRatio_refit_mu0_[jfit].push_back(kInvalid);
-              match_ptRatio_refit_mu1_[jfit].push_back(kInvalid);
             }
             break;
           }
@@ -547,21 +498,13 @@ void staMuon::analyze(const edm::Event& iEvent, const edm::EventSetup& iSetup) {
           eta_refit_[ifit].push_back     ({rv1.eta,      rv2.eta});
           relPtUnc_refit_[ifit].push_back({rv1.relPtUnc, rv2.relPtUnc});
 
-          // == gen matching on refitted track (flat) =========================
-          auto [dR1r, ptr1r] = matchToGen(rv1.eta, rv1.phi, rv1.pt, mv1.charge, gens);
-          auto [dR2r, ptr2r] = matchToGen(rv2.eta, rv2.phi, rv2.pt, mv2.charge, gens);
-
-          match_dR_refit_mu0_[ifit].push_back(dR1r);
-          match_dR_refit_mu1_[ifit].push_back(dR2r);
-          match_ptRatio_refit_mu0_[ifit].push_back(ptr1r);
-          match_ptRatio_refit_mu1_[ifit].push_back(ptr2r);
-
           if (ifit + 1 < kNFits)
             currentTracks = {refitTrks[0], refitTrks[1]};
-
         } // end fit loop
       }
     }
+
+    (void)collId; // suppress unused warning if collId is not used
   };
 
   //if (muons.isValid())    processMuonCollection(*muons,    0);
