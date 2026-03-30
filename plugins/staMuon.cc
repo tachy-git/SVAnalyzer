@@ -81,6 +81,7 @@ private:
   std::vector<std::vector<int>>   charge_mu_;
   std::vector<std::vector<float>> ip_mu_;
   std::vector<std::vector<float>> time_mu_;
+  std::vector<std::vector<int>> dir_mu_;
   std::vector<std::vector<int>>   cscHit_mu_;
   std::vector<std::vector<int>>   dtHit_mu_;
   std::vector<std::vector<float>> normChi_mu_;
@@ -92,6 +93,7 @@ private:
   std::vector<float> LxyErr_;
   std::vector<float> vx_;
   std::vector<float> vy_;
+  std::vector<float> vz_;
   std::vector<float> normChi_vtx_;
   std::vector<float> prob_vtx_;
   std::vector<std::vector<float>> pt_refit_;
@@ -131,7 +133,7 @@ private:
 
   struct MuonVars {
     float pt, eta, phi, ip, time, normChi;
-    int   charge, cscHit, dtHit;
+    int   charge, dir, cscHit, dtHit;
 
     static MuonVars from(const pat::Muon& mu) {
       MuonVars v;
@@ -141,6 +143,7 @@ private:
       v.charge  = mu.charge();
       v.ip      = mu.dB();
       v.time    = mu.time().timeAtIpInOut;
+      v.dir    = mu.time().direction();
       const auto& hp = mu.bestTrack()->hitPattern();
       v.cscHit  = hp.numberOfValidMuonCSCHits();
       v.dtHit   = hp.numberOfValidMuonDTHits();
@@ -206,6 +209,7 @@ void staMuon::beginJob() {
   tree_->Branch("charge_mu",  &charge_mu_);
   tree_->Branch("ip_mu",      &ip_mu_);
   tree_->Branch("time_mu",    &time_mu_);
+  tree_->Branch("dir_mu",    &dir_mu_);
   tree_->Branch("cscHit_mu",  &cscHit_mu_);
   tree_->Branch("dtHit_mu",   &dtHit_mu_);
   tree_->Branch("normChi_mu", &normChi_mu_);
@@ -217,6 +221,7 @@ void staMuon::beginJob() {
   tree_->Branch("LxyErr",         &LxyErr_);
   tree_->Branch("vx",             &vx_);
   tree_->Branch("vy",             &vy_);
+  tree_->Branch("vz",             &vz_);
   tree_->Branch("normChi_vtx",    &normChi_vtx_);
   tree_->Branch("prob_vtx",       &prob_vtx_);
   tree_->Branch("pt_refit",       &pt_refit_);
@@ -243,7 +248,7 @@ void staMuon::clearVectors() {
   dca3d_cp_rho_.clear();
 
   pt_mu_.clear();     eta_mu_.clear();    phi_mu_.clear();
-  charge_mu_.clear(); ip_mu_.clear();     time_mu_.clear();
+  charge_mu_.clear(); ip_mu_.clear();     time_mu_.clear(); dir_mu_.clear();
   cscHit_mu_.clear(); dtHit_mu_.clear();  normChi_mu_.clear();
 
   isValid_vtx_.clear();
@@ -252,6 +257,7 @@ void staMuon::clearVectors() {
   LxyErr_.clear();
   vx_.clear();
   vy_.clear();
+  vz_.clear();
   normChi_vtx_.clear();
   prob_vtx_.clear();
   pt_refit_.clear();
@@ -273,6 +279,7 @@ void staMuon::pushMuonPair(const MuonVars& v1, const MuonVars& v2) {
   charge_mu_.push_back ({v1.charge,  v2.charge});
   ip_mu_.push_back     ({v1.ip,      v2.ip});
   time_mu_.push_back   ({v1.time,    v2.time});
+  dir_mu_.push_back   ({v1.dir,    v2.dir});
   cscHit_mu_.push_back ({v1.cscHit,  v2.cscHit});
   dtHit_mu_.push_back  ({v1.dtHit,   v2.dtHit});
   normChi_mu_.push_back({v1.normChi, v2.normChi});
@@ -413,6 +420,7 @@ void staMuon::analyze(const edm::Event& iEvent, const edm::EventSetup& iSetup) {
           LxyErr_.push_back(kInvalid);
           vx_.push_back(kInvalid);
           vy_.push_back(kInvalid);
+          vz_.push_back(kInvalid);
           normChi_vtx_.push_back(kInvalid);
           prob_vtx_.push_back(kInvalid);
           pt_refit_.push_back      ({kInvalid, kInvalid});
@@ -446,6 +454,7 @@ void staMuon::analyze(const edm::Event& iEvent, const edm::EventSetup& iSetup) {
         LxyErr_.push_back(std::sqrt(totErr.rerr(disp)));
         vx_.push_back(svPos.x());
         vy_.push_back(svPos.y());
+        vz_.push_back(svPos.z());
         normChi_vtx_.push_back(normChi);
         prob_vtx_.push_back(prob);
 
